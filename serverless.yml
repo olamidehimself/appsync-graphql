@@ -1,0 +1,161 @@
+service: appsync-graphql
+
+plugins:
+  - serverless-appsync-plugin
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-2
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:Scan
+        - dynamodb:Query
+        - dynamodb:PutItem
+      Resource:
+        - !GetAtt DynamoDbTableUser.Arn
+        - !Join [ '', [ !GetAtt DynamoDbTableUser.Arn, '/*' ] ]
+    - Effect: Allow
+      Action:
+        - appsync:GraphQL
+      Resource:
+        - !GetAtt GraphQlApi.Arn
+        - !Join [ '/', [ !GetAtt GraphQlApi.Arn, 'types', 'Mutation', 'fields', 'updateUserScore' ] ]
+
+# custom:
+#   appSync:
+#     name: ${self:service}
+#     authenticationType: AWS_IAM
+#     mappingTemplates:
+#       - dataSource: None
+#         type: Mutation
+#         field: updateUserScore
+#     dataSources:
+#       - type: NONE
+#         name: None
+#       - type: AMAZON_DYNAMODB
+#         name: TableUserDS
+#         description: 'DynamoDB DynamoDbTableUser table'
+#         config:
+#           tableName: !Ref DynamoDbTableUser
+appSync:
+  name: ${self:service}
+  authentication:
+    type: 'AWS_IAM'
+  additionalAuthentications:
+    - type: 'AMAZON_COGNITO_USER_POOLS'
+      config:
+        userPoolId: !Ref cognitoUserPool
+  pipelineFunctions:
+    # none:
+    #   dataSource: None
+    #   request: mapping-templates/Mutation.updateUserScore.request.vtl
+    #   response: mapping-templates/Mutation.updateUserScore.response.vtl
+    handleDynamoDbStream:
+      dataSource: userTableDs
+      request: mapping-templates/Mutation.updateUserScore.request.vtl
+      response: mapping-templates/Mutation.updateUserScore.response.vtl
+  resolvers:
+    updateUserScore:
+      type: Mutation
+      field: updateUserScore
+      request: mapping-templates/Mutation.updateUserScore.request.vtl
+      response: mapping-templates/Mutation.updateUserScore.response.vtl
+      # dataSource:
+      #   - type: NONE
+      #     name: None
+      #   - type: AMAZON_DYNAMODB
+      #     name: userTableDs
+      #     description: 'DynamoDB DynamoDbTableUser table'
+      #     config:
+      #       tableName: !Ref DynamoDbTableUser
+      functions:
+        # - none
+        - handleDynamoDbStream
+  dataSources:
+    None:
+      type: NONE
+    userTableDs:
+      type: AMAZON_DYNAMODB
+      description: 'DynamoDB DynamoDbTableUser table'
+      config:
+        tableName: !Ref DynamoDbTableUser
+  
+functions:
+  handleDynamoDbStream:
+    handler: backend/handleDynamoDbStream.handler
+    environment:
+      APP_SYNC_API_URL: !GetAtt GraphQlApi.GraphQLUrl #${appsync:url}
+    events:
+      - stream:
+          type: dynamodb
+          arn: !GetAtt DynamoDbTableUser.StreamArn
+
+resources:
+  Resources:
+    DynamoDbTableUser:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+    cognitoUserPool:
+      Type: "AWS::Cognito::UserPool"
+      Properties: 
+        UsernameAttributes: 
+          - "email"
+        UserPoolName: "YouTubeBookstoreUserpool"
+
+    # Cognito user pool client
+    cognitoUserPoolClient:
+      Type: "AWS::Cognito::UserPoolClient"
+      Properties: 
+        ClientName: "web"
+        UserPoolId: !Ref cognitoUserPool
+
+    cognitoIdentityPool:
+      Type: AWS::Cognito::IdentityPool
+      Properties:
+        AllowUnauthenticatedIdentities: true
+        CognitoIdentityProviders:
+          - ClientId: !Ref cognitoUserPoolClient
+            ProviderName: !GetAtt cognitoUserPool.ProviderName
+        IdentityPoolName: YoutubeBookStoreIdentityPool
+
+    cognitoUnauthIAMRole:
+      Type: "AWS::IAM::Role"
+      Properties:
+        RoleName: "youtube-bookstore-unauth-role"
+        Description: "IAM role for guest users"
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Federated:
+                  - "cognito-identity.amazonaws.com"
+              Action:
+                - "sts:AssumeRoleWithWebIdentity"
+        Policies:
+          - PolicyName: "youtube-bookstore-unauth-user-policy"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: "Allow"
+                  Action:
+                    - "appsync:GraphQL"
+                  Resource: "*"
+                  
+    cognitoIdentityPoolRoleAttachment:
+      Type: AWS::Cognito::IdentityPoolRoleAttachment
+      Properties:
+        IdentityPoolId: !Ref cognitoIdentityPool
+        Roles:
+          unauthenticated: !GetAtt cognitoUnauthIAMRole.Arn

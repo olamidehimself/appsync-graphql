@@ -1,0 +1,33 @@
+type User {
+  id: ID!
+  name: String!
+  score: Int
+}
+
+type Query {
+  listUser: [User]
+}
+
+type UpdatedUserScore {
+  id: ID!
+  score: Int!
+  name: String
+}
+
+type Mutation {
+  createUser(name: String!): User!
+  updateUserScore(id: ID!, score: Int!, name: String): UpdatedUserScore! @aws_iam @aws_cognito_user_pools
+}
+
+type Subscription {
+  onUpdateUserScore(id: ID): UpdatedUserScore
+    @aws_subscribe(mutations: ["updateUserScore"])
+    @aws_iam
+    @aws_cognito_user_pools
+}
+
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
